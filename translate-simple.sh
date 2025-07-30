@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 text=$(wl-paste)
 translated=$(trans -brief :ja "$text")

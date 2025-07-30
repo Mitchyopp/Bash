@@ -2,6 +2,8 @@
 
 set -e # Fail early on errors
 
+cd "$HOME/dotfiles" || exit 1
+
 if [[ -n $(git status --porcelain) ]]; then
     notify-send "📝 Syncing dotfiles to Git..."
     git add .

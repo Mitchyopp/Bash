@@ -4,6 +4,7 @@
 notify-send "Welcome back ミッチー 🌸"
 waypaper --restore
 notify-send "Wallpaper restored."
+wal -R
 sleep 3
 bluetoothctl connect 00:A4:1C:40:CA:57
 notify-send "Headphones connected."

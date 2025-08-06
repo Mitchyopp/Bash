@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-notify-send "🕒 $(date '+%A %d %B - %H:%M:%S')"
+notify-send -t 5000 "🕒 $(date '+%A %d %B - %H:%M:%S')"

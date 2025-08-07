@@ -5,10 +5,7 @@ notify-send "Welcome back ミッチー 🌸"
 waypaper --restore
 notify-send "Wallpaper restored."
 wal -R
-sleep 3
-cliphist store < /dev/null &
-wl-paste --watch cliphist store
-
+sleep 1
 bluetoothctl connect 00:A4:1C:40:CA:57
 notify-send "Headphones connected."
 
@@ -23,5 +20,5 @@ for i in {1..15}; do
     sleep 1
 done
 
-sleep 5
+sleep 3
 ./dotfiles.sh

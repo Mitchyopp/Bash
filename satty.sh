@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-latest_old=$(find "$HOME/Pictures/screenshots" -type f -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f1)
-
+shots="$HOME/Pictures/screenshots"
+mkdir -p "$shots"
 niri msg action screenshot
-while true; do
-    latest_new=$(find "$HOME/Pictures/screenshots" -type f -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f1)
-    [[ "$latest_new" != "$latest_old" ]] && break
-    sleep 0.1
-done
-latest_file=$(find "$HOME/Pictures/screenshots" -type f -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)
-wl-copy < "$latest_file"
-satty -f "$latest_file"
+latest_file=$(find "$shots" -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)
+echo "Latest: $latest_file"
+out="$shots/satty_$(date +'%Y-%m-%d_%H-%M-%S').png"
+echo "Output: $out"
+satty -f "$latest_file" -o "$out"

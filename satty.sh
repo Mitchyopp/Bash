@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-shots="$HOME/Pictures/screenshots"
+shots="$HOME/Media/screenshots"
 mkdir -p "$shots"
 niri msg action screenshot
 latest_file=$(find "$shots" -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)

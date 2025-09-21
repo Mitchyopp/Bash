@@ -20,5 +20,6 @@ for i in {1..15}; do
     sleep 1
 done
 
+wl-paste --watch cliphist store &
 sleep 3
 ./dotfiles.sh

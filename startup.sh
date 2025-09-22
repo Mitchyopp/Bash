@@ -2,9 +2,9 @@
 # startup script
 
 notify-send "Welcome back ミッチー 🌸"
-waypaper --restore
-notify-send "Wallpaper restored."
-wal -R
+# waypaper --restore
+# notify-send "Wallpaper restored."
+# wal -R
 sleep 1
 bluetoothctl connect 00:A4:1C:40:CA:57
 notify-send "Headphones connected."
@@ -21,5 +21,6 @@ for i in {1..15}; do
 done
 
 wl-paste --watch cliphist store &
+pkill mako
 sleep 3
 ./dotfiles.sh

@@ -1,144 +1,212 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# -----------------------------------------------------------------------------
-# Dotfiles / nixdots autosync
-# -----------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Dotfiles / nixdots sync (interactive, gum-powered)
+# ──────────────────────────────────────────────────────────────────────────────
 
-# --- config ---------------------------------------------------------------
-DEFAULT_REPOS=("$HOME/nixdots" "$HOME/dotfiles")
-COMMIT_MSG_DEFAULT="chore(sync): auto-update $(date -Iseconds)"
-LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotsync"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/$(date -Iseconds).log"
+# --- CONFIG: add your repos here ------------------------------------------------
+REPOS=(
+  "$HOME/nixdots"
+  "$HOME/dotfiles"
+  "$HOME/Scripts/"
+  "$HOME/.config/niri/"
+)
 
-# --- args ----------------------------------------------------------------
-DRY_RUN="false"
-COMMIT_MSG="$COMMIT_MSG_DEFAULT"
-REPOS=()
+# Default commit message if you just smash Enter
+DEFAULT_MSG="chore(sync): dot sync $(date -Iseconds)"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run) DRY_RUN="true"; shift ;;
-    --message|-m) COMMIT_MSG="${2:?Missing message}"; shift 2 ;;
-    --repo) REPOS+=("${2:?Missing path}"); shift 2 ;;
-    *) echo "Unknown arg: $1" >&2; exit 2 ;;
-  esac
-done
+# --- Helpers -------------------------------------------------------------------
+die() { echo -e "\e[31m$*\e[0m" >&2; exit 1; }
+has() { command -v "$1" >/dev/null 2>&1; }
 
-if [[ ${#REPOS[@]} -eq 0 ]]; then
-  REPOS=("${DEFAULT_REPOS[@]}")
+if ! has gum; then
+  die "gum is required. nix-shell -p gum  # or add gum to your system/user packages."
+fi
+if ! has git; then
+  die "git is required."
 fi
 
-# --- utils ---------------------------------------------------------------
-notify() {
-  local body="${1:-}"; local urg="${2:-normal}"; local title="${3:-Dot Sync}"
-  command -v notify-send >/dev/null 2>&1 && notify-send --urgency="$urg" "$title" "$body" || true
-}
-section() { printf '\n\033[1;36m==> %s\033[0m\n' "$*" | tee -a "$LOG_FILE"; }
+style_h()   { gum style --border normal --margin "1 0" --padding "0 1" --border-foreground 212 "$@"; }
+style_ok()  { gum style --foreground 120 "$@"; }
+style_bad() { gum style --foreground 203 "$@"; }
+style_dim() { gum style --faint "$@"; }
 
-repo_has_changes() {
+is_git_repo() { [[ -d "$1/.git" ]]; }
+
+repo_short() { basename "$1"; }
+
+repo_dirty() (
+  cd "$1" || return 1
   [[ -n "$(git status --porcelain=v1 2>/dev/null)" ]]
-}
+)
 
-ensure_upstream() {
-  local remote branch upstream default_branch
-  remote="${1:-origin}"
-  branch="$(git symbolic-ref --quiet --short HEAD || true)"
+status_summary() (
+  cd "$1" || return 1
+  # Count M, A, D, ?? from porcelain
+  git status --porcelain=v1 | awk '
+    $1 ~ /^M/ || $2 ~ /^M/ {m++}
+    $1 ~ /^A/ || $2 ~ /^A/ {a++}
+    $1 ~ /^D/ || $2 ~ /^D/ {d++}
+    $1 ~ /^\?\?/ {u++}
+    END {
+      if (m==0 && a==0 && d==0 && u==0) print "clean"
+      else printf "M:%d A:%d D:%d ?:%.0f", m+0, a+0, d+0, u+0
+    }'
+)
 
+current_branch() (
+  cd "$1" || return 1
+  git symbolic-ref --quiet --short HEAD 2>/dev/null || true
+)
+
+ensure_upstream() (
+  # Sets upstream if missing. Echoes "<remote> <branch>" on success.
+  # Creates a branch if detached.
+  repo="$1"; remote="${2:-origin}"
+  cd "$repo" || return 1
+
+  branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   if [[ -z "$branch" ]]; then
-    branch="autosync-$(date +%Y%m%d-%H%M%S)"
-    git switch -c "$branch" >/dev/null
+    branch="sync-$(date +%Y%m%d-%H%M%S)"
+    gum spin --title "Creating branch $branch" -- git switch -c "$branch" >/dev/null
   fi
 
-  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)"
+  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
   if [[ -z "$upstream" ]]; then
-    if git remote show -n "$remote" >/dev/null 2>&1; then
-      default_branch="$(git remote show -n "$remote" | awk '/HEAD branch/ {print $NF}')"
-      default_branch="${default_branch:-main}"
-    else
-      remote="origin"
-      default_branch="main"
+    # Pick remote if there are multiple
+    remotes=( $(git remote) )
+    if [[ ${#remotes[@]} -eq 0 ]]; then
+      die "No git remotes configured in $(repo_short "$repo")."
     fi
-    if git ls-remote --exit-code "$remote" "refs/heads/$branch" >/dev/null 2>&1; then
-      git branch --set-upstream-to="$remote/$branch" >/dev/null 2>&1 || true
-    else
-      git push -u "$remote" "$branch" >/dev/null
+    if [[ ${#remotes[@]} -gt 1 ]]; then
+      choice=$(printf "%s\n" "${remotes[@]}" | gum choose --header "Select remote for upstream")
+      remote="$choice"
     fi
+    # Push with -u if no upstream
+    gum spin --title "Pushing -u $remote $branch" -- git push -u "$remote" "$branch" >/dev/null
   fi
   echo "$remote $branch"
-}
+)
 
-sync_one_repo() {
-  local path="$1"
-  [[ -d "$path/.git" ]] || { echo "Skip: $path (not a git repo)"; return 0; }
+view_status() (
+  repo="$1"
+  cd "$repo" || return 1
+  style_h "Status — $(repo_short "$repo")"
+  git status -sb
+  echo
+)
 
-  section "Syncing $path"
-  pushd "$path" >/dev/null
+view_diff() (
+  repo="$1"
+  cd "$repo" || return 1
+  style_h "Diff — $(repo_short "$repo")"
+  git --no-pager diff
+  echo
+)
 
-  git status -sb | tee -a "$LOG_FILE"
+commit_all() (
+  repo="$1"
+  cd "$repo" || return 1
 
-  if ! repo_has_changes; then
-    echo "No changes in $path" | tee -a "$LOG_FILE"
-    notify "📂 No changes in $(basename "$path") — nothing to upload." normal
-  else
-    echo "Staging changes…" | tee -a "$LOG_FILE"
-    if [[ "$DRY_RUN" == "true" ]]; then
-      git -c color.ui=always status --porcelain=v1 | tee -a "$LOG_FILE"
-      echo "(dry-run) Would run: git add -A; git commit -m '$COMMIT_MSG'" | tee -a "$LOG_FILE"
-    else
-      git add -A
-      if git diff --cached --quiet --no-ext-diff; then
-        echo "Nothing to commit after add -A (likely ignored files). Skipping." | tee -a "$LOG_FILE"
-      else
-        git commit -m "$COMMIT_MSG" | tee -a "$LOG_FILE"
-      fi
-    fi
+  if ! repo_dirty "$repo"; then
+    style_ok "Nothing to commit in $(repo_short "$repo")."
+    return 0
   fi
 
-  if [[ "$DRY_RUN" == "true" ]]; then
-    echo "(dry-run) Would ensure upstream and push" | tee -a "$LOG_FILE"
+  # Show a minimal staged preview before adding
+  gum style --faint "Staging all changes (tracked + untracked)…"
+  git add -A
+
+  if git diff --cached --quiet --no-ext-diff; then
+    style_dim "Nothing staged after add -A (maybe .gitignore)."
+    return 0
+  fi
+
+  msg=$(gum input --placeholder "$DEFAULT_MSG" --header "Commit message (Enter for default)")
+  msg="${msg:-$DEFAULT_MSG}"
+
+  if gum confirm "Commit now with message: $(style_dim "$msg")?"; then
+    gum spin --title "Committing…" -- git commit -m "$msg" >/dev/null \
+      && style_ok "Committed."
   else
-    read -r remote branch < <(ensure_upstream "origin")
-    echo "Using remote=$remote branch=$branch" | tee -a "$LOG_FILE"
+    style_dim "Commit cancelled."
+  fi
+)
 
-    if git rev-parse --verify "$branch" >/dev/null 2>&1; then
-      git pull --rebase --autostash "$remote" "$branch" | tee -a "$LOG_FILE" || {
-        notify "⚠️ Rebase failed in $(basename "$path"). Manual fix needed." critical
-        popd >/dev/null
-        return 1
-      }
-    fi
-
-    if ! git push "$remote" "$branch" | tee -a "$LOG_FILE"; then
-      notify "❌ Push failed in $(basename "$path"). Check $LOG_FILE." critical
-      popd >/dev/null
+push_repo() (
+  repo="$1"
+  cd "$repo" || return 1
+  read -r remote branch < <(ensure_upstream "$repo")
+  gum spin --title "Pull --rebase $remote/$branch (autostash)" -- \
+    git pull --rebase --autostash "$remote" "$branch" >/dev/null || {
+      style_bad "Rebase failed. Fix conflicts and try again."
       return 1
-    fi
-    notify "✅ $(basename "$path") pushed." normal
-  fi
+    }
+  gum spin --title "Pushing → $remote/$branch" -- git push "$remote" "$branch" >/dev/null \
+    && style_ok "Pushed to $remote/$branch."
+)
 
-  popd >/dev/null
-  return 0
+# --- Repo Picker ---------------------------------------------------------------
+pick_repo() {
+  # Build menu with status badges
+  mapfile -t entries < <(
+    for r in "${REPOS[@]}"; do
+      if ! is_git_repo "$r"; then
+        printf "%s  %s\n" "$(repo_short "$r")" "$(style_bad "[not a git repo]")"
+        continue
+      fi
+      sum="$(status_summary "$r" || echo "error")"
+      if [[ "$sum" == "clean" ]]; then
+        printf "%s  %s\n" "$(repo_short "$r")" "$(style_dim "[clean]")"
+      else
+        printf "%s  %s\n" "$(repo_short "$r")" "$(style_ok "[$sum]")"
+      fi
+    done
+  )
+
+  [[ ${#entries[@]} -gt 0 ]] || die "No repos configured."
+
+  choice="$(printf "%s\n" "${entries[@]}" \
+    | gum choose --header "Pick a repo" --height 10)"
+
+  [[ -n "$choice" ]] || return 1
+
+  # Extract the name (first token, before two spaces)
+  name="${choice%%  *}"
+  # Resolve back to absolute path
+  for r in "${REPOS[@]}"; do
+    if [[ "$(repo_short "$r")" == "$name" ]]; then
+      echo "$r"
+      return 0
+    fi
+  done
+  return 1
 }
 
-START="$(date +%s)"
-notify "📝 Syncing nixdots & dotfiles…" normal "Dot Sync"
+# --- Main loop -----------------------------------------------------------------
+style_h "Dotfiles Sync"
 
-FAILED=0
-for repo in "${REPOS[@]}"; do
-  if ! sync_one_repo "$repo"; then
-    FAILED=1
+while true; do
+  repo="$(pick_repo)" || break
+
+  if ! is_git_repo "$repo"; then
+    style_bad "$(repo_short "$repo") is not a git repo."
+    continue
   fi
+
+  while true; do
+    action=$(gum choose \
+      "Status" "Diff" "Commit (stage all)" "Push" "Open Shell Here" "Change Repo" "Quit" \
+      --header "Repo: $(repo_short "$repo")  •  $(status_summary "$repo")")
+    case "$action" in
+      "Status") view_status "$repo" ;;
+      "Diff") view_diff "$repo" ;;
+      "Commit (stage all)") commit_all "$repo" ;;
+      "Push") push_repo "$repo" ;;
+      "Open Shell Here") ( cd "$repo" && ${SHELL:-bash} );;
+      "Change Repo") break ;;
+      "Quit") exit 0 ;;
+    esac
+  done
 done
-
-DUR=$(( $(date +%s) - START ))
-if [[ "$DRY_RUN" == "true" ]]; then
-  notify "👀 Dry-run complete in ${DUR}s\nSee log: $LOG_FILE" normal
-elif [[ $FAILED -eq 0 ]]; then
-  notify "🚀 Sync complete in ${DUR}s\nLog: $LOG_FILE" normal
-else
-  notify "⚠️ Sync completed with errors. See $LOG_FILE" critical
-fi
-
-echo "Log: $LOG_FILE"
